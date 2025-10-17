@@ -1,0 +1,141 @@
+name: Deploy to BTAB Platform
+
+on:
+  push:
+    branches:
+      - main
+      - production
+  workflow_dispatch:
+
+env:
+  NODE_VERSION: '18'
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+
+    - name: Install dependencies
+      run: npm ci
+
+    - name: Run tests
+      run: npm test --if-present
+
+    - name: Build application
+      run: npm run build
+      env:
+        BTAB_API_KEY: ${{ secrets.BTAB_API_KEY }}
+        VENDOR_ID: ${{ secrets.VENDOR_ID }}
+        NODE_ENV: production
+
+    - name: Create deployment package
+      run: |
+        # Create tar archive of build output
+        tar -czf deploy.tar.gz \
+          .next \
+          public \
+          package.json \
+          package-lock.json \
+          btab.config.json \
+          next.config.js \
+          .env.production
+
+    - name: Deploy to BTAB Platform
+      run: |
+        # Deploy to BTAB platform
+        curl -X POST https://deploy.btab.app/api/vendor-deploy \
+          -H "Authorization: Bearer ${{ secrets.DEPLOY_TOKEN }}" \
+          -F "vendor_id=${{ secrets.VENDOR_ID }}" \
+          -F "environment=${{ github.ref == 'refs/heads/production' && 'production' || 'staging' }}" \
+          -F "package=@deploy.tar.gz" \
+          -F "commit_sha=${{ github.sha }}" \
+          -F "commit_message=${{ github.event.head_commit.message }}"
+
+    - name: Wait for deployment
+      run: |
+        # Poll deployment status
+        for i in {1..30}; do
+          STATUS=$(curl -s https://deploy.btab.app/api/vendor-deploy/status \
+            -H "Authorization: Bearer ${{ secrets.DEPLOY_TOKEN }}" \
+            -G --data-urlencode "vendor_id=${{ secrets.VENDOR_ID }}" \
+            -G --data-urlencode "deployment_id=${{ env.DEPLOYMENT_ID }}" \
+            | jq -r '.status')
+
+          if [ "$STATUS" = "completed" ]; then
+            echo "✅ Deployment successful!"
+            exit 0
+          elif [ "$STATUS" = "failed" ]; then
+            echo "❌ Deployment failed!"
+            exit 1
+          fi
+
+          echo "⏳ Deployment in progress... (attempt $i/30)"
+          sleep 10
+        done
+
+        echo "⏰ Deployment timeout!"
+        exit 1
+
+    - name: Verify deployment
+      run: |
+        # Check if site is accessible
+        VENDOR_ID=${{ secrets.VENDOR_ID }}
+        URL="https://${VENDOR_ID}.vendors.btab.app/api/health"
+
+        if curl -f -s "$URL" > /dev/null; then
+          echo "✅ Site is live at $URL"
+        else
+          echo "❌ Site verification failed"
+          exit 1
+        fi
+
+    - name: Notify Slack (optional)
+      if: success() && secrets.SLACK_WEBHOOK
+      run: |
+        curl -X POST ${{ secrets.SLACK_WEBHOOK }} \
+          -H 'Content-Type: application/json' \
+          -d '{
+            "text": "✅ Vendor site deployed successfully",
+            "blocks": [
+              {
+                "type": "section",
+                "text": {
+                  "type": "mrkdwn",
+                  "text": "*Vendor Site Deployed*\n• Vendor: `${{ secrets.VENDOR_ID }}`\n• Environment: `${{ github.ref == 'refs/heads/production' && 'production' || 'staging' }}`\n• Commit: `${{ github.sha }}`"
+                }
+              }
+            ]
+          }'
+
+    - name: Create deployment record
+      if: success()
+      uses: actions/github-script@v6
+      with:
+        script: |
+          const deployment = await github.rest.repos.createDeployment({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            ref: context.sha,
+            environment: context.ref === 'refs/heads/production' ? 'production' : 'staging',
+            auto_merge: false,
+            required_contexts: [],
+            description: 'BTAB Platform Deployment'
+          });
+
+          await github.rest.repos.createDeploymentStatus({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            deployment_id: deployment.data.id,
+            state: 'success',
+            environment_url: `https://${{ secrets.VENDOR_ID }}.vendors.btab.app`,
+            description: 'Deployment completed successfully'
+          });

@@ -1,0 +1,36 @@
+{
+  "vendor": {
+    "id": "vendor-001",
+    "name": "Modern Furniture Store",
+    "domain": "furniture.btab.app"
+  },
+  "api": {
+    "endpoint": "https://api.btab.app/api/v1",
+    "apiKey": "${BTAB_API_KEY}"
+  },
+  "features": {
+    "catalog": true,
+    "customProducts": true,
+    "checkout": true,
+    "analytics": true,
+    "customPricing": true
+  },
+  "deployment": {
+    "type": "nextjs",
+    "buildCommand": "npm run build",
+    "outputDir": ".next"
+  },
+  "branding": {
+    "primaryColor": "#8B4513",
+    "secondaryColor": "#D2691E",
+    "logo": "/logo.svg",
+    "favicon": "/favicon.ico"
+  },
+  "categories": [
+    "Workstations",
+    "Office Seating",
+    "Storage",
+    "Boardroom Tables",
+    "Accessories"
+  ]
+}
